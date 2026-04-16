@@ -1,0 +1,42 @@
+{
+  "restaurants": [
+    {
+      "name": "Restaurant Oase Effretikon",
+      "url": "https://oaseeffretikon.ch/dienstleistungen/gastronomie/",
+      "address": "Bietenholzstrasse 1, 8307 Effretikon",
+      "phone": "052 354 54 54",
+      "scraper_type": "oase",
+      "active": true
+    },
+    {
+      "name": "Villa Barone",
+      "url": "https://villa-barone-effretikon.ch/speisekarte-villa-barone/",
+      "address": "Effretikon",
+      "phone": "",
+      "scraper_type": "villa_barone",
+      "active": true
+    },
+    {
+      "name": "Ristorante Bellissimo da Edi",
+      "url": "https://bellissimo-effretikon.ch/",
+      "address": "Bahnhofstrasse 21, 8307 Illnau-Effretikon",
+      "phone": "",
+      "scraper_type": "generic",
+      "active": true
+    },
+    {
+      "name": "Migros Restaurant Effi-Märt",
+      "url": "https://speisekarte.menu/restaurants/effretikon/migros-restaurant-effi-maert",
+      "address": "Märtplatz 5, 8307 Illnau-Effretikon",
+      "phone": "",
+      "scraper_type": "generic",
+      "active": true
+    }
+  ],
+  "settings": {
+    "timeout": 10,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "export_markdown": true,
+    "export_filename": "tagesmenus_heute.md"
+  }
+}

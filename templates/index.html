@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Effretikon Mittagsmenüs</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <span class="icon">🍽️</span>
+                    <div class="header-text">
+                        <h1>Effretikon Mittagsmenüs</h1>
+                        <div class="header-meta">
+                            <div id="statusBar" class="status-bar hidden">
+                                <span id="statusIcon" class="status-icon">⏳</span>
+                                <span id="statusText">Lade Menüs...</span>
+                            </div>
+                            <div id="timestamp" class="timestamp hidden">
+                                Letzte Aktualisierung: <span id="timestampValue">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button id="refreshBtn" class="btn btn-primary">
+                    <span class="btn-icon">🔄</span>
+                    Aktualisieren
+                </button>
+                <button id="exportBtn" class="btn btn-secondary">
+                    <span class="btn-icon">📄</span>
+                    Export MD
+                </button>
+            </div>
+        </header>
+
+        <!-- Restaurant Cards -->
+        <div id="restaurantContainer" class="restaurant-container">
+            <!-- Cards werden hier dynamisch eingefügt -->
+        </div>
+
+        <!-- Loading Spinner -->
+        <div id="loadingSpinner" class="loading-spinner hidden">
+            <div class="spinner"></div>
+            <p>Sammle Menüs von Restaurants...</p>
+        </div>
+
+        <!-- Empty State -->
+        <div id="emptyState" class="empty-state hidden">
+            <span class="empty-icon">🔍</span>
+            <h2>Keine Menüs gefunden</h2>
+            <p>Klicke auf "Aktualisieren", um Menüs zu laden</p>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Made with ❤️ for Effretikon | <a href="https://github.com" target="_blank">GitHub</a></p>
+            <p class="footer-note">Die Daten werden von den Restaurant-Websites gesammelt und können variieren.</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

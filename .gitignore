@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+.venv/
+venv/
+tagesmenus_*.md
+tagesmenus_export.md
+pura_vida_menu.jpg
+*.log
+.DS_Store
