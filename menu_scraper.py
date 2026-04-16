@@ -31,10 +31,15 @@ except ImportError:
 try:
     import pytesseract as _pytesseract
     import os as _os
-    # On Windows, tesseract is typically installed here
+    # Set tesseract binary path explicitly
     _win_tess = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
     if _os.name == 'nt' and _os.path.isfile(_win_tess):
         _pytesseract.pytesseract.tesseract_cmd = _win_tess
+    elif _os.name != 'nt':
+        for _linux_tess in ['/usr/bin/tesseract', '/usr/local/bin/tesseract']:
+            if _os.path.isfile(_linux_tess):
+                _pytesseract.pytesseract.tesseract_cmd = _linux_tess
+                break
     OCR_SUPPORT = True
 except ImportError:
     OCR_SUPPORT = False
