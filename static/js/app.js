@@ -1,5 +1,6 @@
 // App State
 let currentMenus = [];
+let cardOrder = loadOrder(); // persisted restaurant name order
 
 // DOM Elements
 const refreshBtn = document.getElementById('refreshBtn');
@@ -24,10 +25,7 @@ const restaurantIcons = {
 
 // Initialize App
 document.addEventListener('DOMContentLoaded', () => {
-    // Load menus on startup
     loadMenus();
-    
-    // Event Listeners
     refreshBtn.addEventListener('click', loadMenus);
     exportBtn.addEventListener('click', exportToMarkdown);
 });
@@ -60,7 +58,36 @@ async function loadMenus() {
     }
 }
 
-// Display Menus
+// --- Order persistence (localStorage) ---
+
+const ORDER_KEY = 'effretikon_card_order';
+
+function loadOrder() {
+    try {
+        return JSON.parse(localStorage.getItem(ORDER_KEY)) || [];
+    } catch { return []; }
+}
+
+function saveOrder(names) {
+    cardOrder = names;
+    localStorage.setItem(ORDER_KEY, JSON.stringify(names));
+}
+
+function applyOrder(menus) {
+    if (!cardOrder.length) return menus;
+    const sorted = [...menus].sort((a, b) => {
+        const ia = cardOrder.indexOf(a.restaurant);
+        const ib = cardOrder.indexOf(b.restaurant);
+        if (ia === -1 && ib === -1) return 0;
+        if (ia === -1) return 1;
+        if (ib === -1) return -1;
+        return ia - ib;
+    });
+    return sorted;
+}
+
+// --- Display ---
+
 function displayMenus(menus) {
     restaurantContainer.innerHTML = '';
     
@@ -71,15 +98,13 @@ function displayMenus(menus) {
     
     hideEmptyState();
     
-    const withMenus = menus.filter(m => m.menus && m.menus.length > 0);
+    const withMenus = applyOrder(menus.filter(m => m.menus && m.menus.length > 0));
     const withoutMenus = menus.filter(m => !m.menus || m.menus.length === 0);
 
-    // Restaurants with menus first
     withMenus.forEach(menu => {
-        restaurantContainer.appendChild(createRestaurantCard(menu));
+        restaurantContainer.appendChild(createRestaurantCard(menu, true));
     });
 
-    // Restaurants without menus in a collapsed section at the bottom
     if (withoutMenus.length > 0) {
         const section = document.createElement('details');
         section.className = 'no-menu-section';
@@ -92,14 +117,83 @@ function displayMenus(menus) {
         `;
         restaurantContainer.appendChild(section);
         const grid = section.querySelector('#noMenuGrid');
-        withoutMenus.forEach(menu => grid.appendChild(createRestaurantCard(menu)));
+        withoutMenus.forEach(menu => grid.appendChild(createRestaurantCard(menu, false)));
     }
+
+    initDragAndDrop();
+}
+
+// --- Drag and Drop ---
+
+let dragSrc = null;
+
+function initDragAndDrop() {
+    const cards = restaurantContainer.querySelectorAll('.restaurant-card[draggable="true"]');
+    cards.forEach(card => {
+        card.addEventListener('dragstart', onDragStart);
+        card.addEventListener('dragover',  onDragOver);
+        card.addEventListener('dragleave', onDragLeave);
+        card.addEventListener('drop',      onDrop);
+        card.addEventListener('dragend',   onDragEnd);
+    });
+}
+
+function onDragStart(e) {
+    dragSrc = this;
+    this.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', this.dataset.restaurant);
+}
+
+function onDragOver(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (this !== dragSrc) this.classList.add('drag-over');
+}
+
+function onDragLeave() {
+    this.classList.remove('drag-over');
+}
+
+function onDrop(e) {
+    e.preventDefault();
+    this.classList.remove('drag-over');
+    if (!dragSrc || dragSrc === this) return;
+
+    // Swap DOM positions
+    const parent = this.parentNode;
+    const allCards = [...parent.querySelectorAll('.restaurant-card[draggable="true"]')];
+    const srcIdx  = allCards.indexOf(dragSrc);
+    const destIdx = allCards.indexOf(this);
+
+    if (srcIdx < destIdx) {
+        parent.insertBefore(dragSrc, this.nextSibling);
+    } else {
+        parent.insertBefore(dragSrc, this);
+    }
+
+    // Persist new order
+    const newOrder = [...parent.querySelectorAll('.restaurant-card[draggable="true"]')]
+        .map(c => c.dataset.restaurant);
+    saveOrder(newOrder);
+}
+
+function onDragEnd() {
+    this.classList.remove('dragging');
+    restaurantContainer.querySelectorAll('.restaurant-card').forEach(c => {
+        c.classList.remove('drag-over');
+    });
+    dragSrc = null;
 }
 
 // Create Restaurant Card
-function createRestaurantCard(menuData) {
+function createRestaurantCard(menuData, draggable) {
     const card = document.createElement('div');
     card.className = 'restaurant-card';
+    if (draggable) {
+        card.setAttribute('draggable', 'true');
+        card.dataset.restaurant = menuData.restaurant;
+    }
     
     const icon = getRestaurantIcon(menuData.restaurant);
     const hasMenus = menuData.menus && menuData.menus.length > 0;
@@ -107,9 +201,14 @@ function createRestaurantCard(menuData) {
                        menuData.status?.includes('nicht erreichbar') ? 'error' : 
                        'unavailable';
     
+    const dragHandle = draggable
+        ? `<span class="drag-handle" title="Ziehen zum Sortieren">⠿</span>`
+        : '';
+
     card.innerHTML = `
         <div class="restaurant-header">
             <div class="restaurant-title-row">
+                ${dragHandle}
                 <h2 class="restaurant-name">
                     <span class="restaurant-icon">${icon}</span>
                     ${menuData.restaurant}
@@ -280,5 +379,3 @@ function enableButtons() {
     exportBtn.disabled = false;
 }
 
-// Auto-refresh every 30 minutes (optional)
-// setInterval(loadMenus, 30 * 60 * 1000);

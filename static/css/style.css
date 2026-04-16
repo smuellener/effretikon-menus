@@ -200,6 +200,44 @@ body {
     overflow: hidden;
 }
 
+.restaurant-card[draggable="true"] {
+    cursor: grab;
+}
+
+.restaurant-card[draggable="true"]:active {
+    cursor: grabbing;
+}
+
+.restaurant-card.dragging {
+    opacity: 0.45;
+    transform: scale(0.97);
+    box-shadow: none;
+}
+
+.restaurant-card.drag-over {
+    transform: translateY(-6px);
+    box-shadow: 0 0 0 3px var(--primary-color), var(--shadow-lg);
+}
+
+/* Drag handle dot-grid icon */
+.drag-handle {
+    display: inline-flex;
+    align-items: center;
+    font-size: 1.3rem;
+    color: var(--border-color);
+    margin-right: 6px;
+    cursor: grab;
+    line-height: 1;
+    user-select: none;
+    transition: color 0.2s;
+    flex-shrink: 0;
+}
+
+.restaurant-card[draggable="true"]:hover .drag-handle {
+    color: var(--text-light);
+}
+
+
 .restaurant-card::before {
     content: '';
     position: absolute;
@@ -223,7 +261,7 @@ body {
 
 .restaurant-title-row {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
     flex-wrap: wrap;
