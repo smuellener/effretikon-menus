@@ -30,6 +30,11 @@ except ImportError:
 
 try:
     import pytesseract as _pytesseract
+    import os as _os
+    # On Windows, tesseract is typically installed here
+    _win_tess = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    if _os.name == 'nt' and _os.path.isfile(_win_tess):
+        _pytesseract.pytesseract.tesseract_cmd = _win_tess
     OCR_SUPPORT = True
 except ImportError:
     OCR_SUPPORT = False
@@ -782,6 +787,12 @@ class PuraVidaScraper(MenuScraper):
         try:
             from PIL import Image
             import io as _io
+            import os
+            # On Windows, tessdata may be in user folder
+            if os.name == 'nt':
+                user_tessdata = os.path.expanduser('~/tessdata')
+                if os.path.isdir(user_tessdata):
+                    os.environ.setdefault('TESSDATA_PREFIX', user_tessdata)
             img = Image.open(_io.BytesIO(img_bytes)).convert('RGB')
             # Resize for better OCR accuracy if small
             w, h = img.size
@@ -824,10 +835,9 @@ class PuraVidaScraper(MenuScraper):
         # Split OCR lines into per-day sections
         sections: Dict[str, List[str]] = {}
         current_day = None
-        stop_words = ['wochen', 'angebot', 'wochenangebot']
 
         for line in lines:
-            # Stop at weekly specials section (full phrase, not just 'wochen')
+            # Stop at weekly specials section
             if re.search(r'wochen\s*angebot', line, re.IGNORECASE):
                 break
 
@@ -835,8 +845,17 @@ class PuraVidaScraper(MenuScraper):
             if matched_day:
                 current_day = matched_day
                 sections[current_day] = []
+                # Tesseract often merges day header + first menu item on one line
+                # e.g. "Donnerstag, 16. April 2026 mit Frühlingsrolle"
+                # → extract the trailing text after the date
+                trailing = re.sub(
+                    r'^(?:' + '|'.join(day_names) + r')[^,]*,?\s*\d{1,2}\.\s*\w+\s*\d{4}\s*',
+                    '', line, flags=re.IGNORECASE
+                ).strip()
+                if trailing and len(trailing) > 4:
+                    sections[current_day].append(trailing)
             elif current_day:
-                # Skip pure date lines like "17.April 2026" (continuation of split day header)
+                # Skip pure date lines like "17.April 2026"
                 if re.match(r'^\d{1,2}[\.\- ]+\w+\s+\d{4}$', line):
                     continue
                 sections[current_day].append(line)
