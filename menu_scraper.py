@@ -761,12 +761,12 @@ class PuraVidaScraper(MenuScraper):
         except Exception as e:
             return self._error_result(f'Menü-Bild nicht ladbar: {e}')
 
-        # OCR
-        ocr_lines = self._ocr_image(img_bytes)
-        if not ocr_lines:
+        # OCR mit Spalten-Trennung
+        ocr = self._ocr_image(img_bytes)
+        if not ocr:
             return self._error_result('OCR fehlgeschlagen')
 
-        return self._parse_today(ocr_lines, today)
+        return self._parse_menu(ocr, today)
 
     def _find_menu_image(self, soup: BeautifulSoup) -> Optional[str]:
         """Sucht das Wochenplan-Bild anhand des srcset (transf/none) auf der Seite."""
@@ -782,36 +782,87 @@ class PuraVidaScraper(MenuScraper):
                         return url
         return None
 
-    def _ocr_image(self, img_bytes: bytes) -> List[str]:
-        """Führt OCR auf dem Bild durch und gibt bereinigte Textzeilen zurück."""
+    def _ocr_image(self, img_bytes: bytes) -> Optional[Dict]:
+        """OCR mit Spalten-Trennung via Bounding-Boxes.
+        Gibt {'left': [...], 'right': [...], 'all': [...]} zurück.
+        Jedes Element hat {'text': str, 'y': int}.
+        """
         try:
             from PIL import Image
             import io as _io
             import os
-            # On Windows, tessdata may be in user folder
             if os.name == 'nt':
                 user_tessdata = os.path.expanduser('~/tessdata')
                 if os.path.isdir(user_tessdata):
                     os.environ.setdefault('TESSDATA_PREFIX', user_tessdata)
+
             img = Image.open(_io.BytesIO(img_bytes)).convert('RGB')
-            # Resize for better OCR accuracy if small
             w, h = img.size
             if w < 1000:
                 img = img.resize((w * 2, h * 2), Image.LANCZOS)
-            text = _pytesseract.image_to_string(img, lang='deu', config='--psm 6')
-            return [line.strip() for line in text.split('\n') if line.strip()]
-        except Exception as e:
-            print(f'OCR Fehler bei Pura Vida: {e}')
-            return []
+                w, h = img.size
 
-    def _parse_today(self, lines: List[str], today: datetime) -> Dict:
-        """Parst den OCR-Text und extrahiert das heutige Tagesmenü."""
+            # Full merged text for Wochen Angebot section (below table)
+            full_text = _pytesseract.image_to_string(img, lang='deu', config='--psm 6')
+            all_lines = [l.strip() for l in full_text.split('\n') if l.strip()]
+
+            # Word-level bounding boxes to separate left/right columns
+            data = _pytesseract.image_to_data(
+                img, lang='deu', config='--psm 6',
+                output_type=_pytesseract.Output.DICT
+            )
+
+            # Table split: left column (days+meat) ends at ~52% of width
+            split_x = int(w * 0.52)
+            left_d: Dict = {}
+            right_d: Dict = {}
+
+            for i in range(len(data['text'])):
+                text = data['text'][i].strip()
+                if not text or int(data['conf'][i]) < 15:
+                    continue
+                key = (data['block_num'][i], data['par_num'][i], data['line_num'][i])
+                x = data['left'][i]
+                y = data['top'][i]
+                bucket = left_d if x < split_x else right_d
+                entry = bucket.setdefault(key, {'words': [], 'y': y})
+                entry['words'].append((x, text))
+
+            def reconstruct(line_dict: Dict) -> List[Dict]:
+                result = []
+                for key in sorted(line_dict.keys()):
+                    entry = line_dict[key]
+                    words = sorted(entry['words'], key=lambda t: t[0])
+                    line = ' '.join(w for _, w in words).strip()
+                    if line:
+                        result.append({'text': line, 'y': entry['y']})
+                return result
+
+            return {
+                'left': reconstruct(left_d),
+                'right': reconstruct(right_d),
+                'all': all_lines,
+            }
+        except Exception as e:
+            print(f'OCR Fehler bei Thalegg: {e}')
+            return None
+
+    def _parse_menu(self, ocr: Dict, today: datetime) -> Dict:
+        """Parst die OCR-Spalten und extrahiert:
+        - Tages-Fleischgericht (linke Spalte, tagabhängig)
+        - 2 Vegi-Gerichte (rechte Spalte, ganze Woche)
+        - Fitnesteller (rechte Spalte, tagabhängig nach Reihenfolge)
+        - 2 Pasta-Gerichte (rechte Spalte, ganze Woche)
+        - Wochen-Angebot Gerichte (unterhalb der Tabelle)
+        """
         today_name = self.GERMAN_DAYS.get(today.weekday(), '')
         day_names = list(self.GERMAN_DAYS.values())
+        price_re = re.compile(r'\bFr\.?\s*([\d]{2,3}\.\d{2})', re.IGNORECASE)
 
-        # Extract header prices (first ~8 lines before first day section)
+        # --- Header-Preise aus linker/rechter Spalte ---
         header_price = {'menu': 'CHF 22.50', 'vegi': 'CHF 20.50'}
-        for line in lines[:10]:
+        for item in (ocr['left'] + ocr['right'])[:12]:
+            line = item['text']
             m = re.search(r'Men.?\s+Fr\.?\s*([\d.]+)', line, re.IGNORECASE)
             if m:
                 header_price['menu'] = f'CHF {m.group(1)}'
@@ -820,34 +871,27 @@ class PuraVidaScraper(MenuScraper):
                 header_price['vegi'] = f'CHF {v.group(1)}'
 
         def fuzzy_day_match(line: str) -> Optional[str]:
-            """Erkennt Tagesnamen auch bei OCR-Fehlern (z.B. 'Freltag' → 'Freitag')."""
-            line_lower = line.lower()
+            ll = line.lower()
             for day in day_names:
-                # Allow 1 char difference in first 5 chars
-                prefix = day[:5].lower()
-                if line_lower[:5] == prefix or (
-                    len(line_lower) >= 4 and
-                    sum(a != b for a, b in zip(line_lower[:6], day.lower()[:6])) <= 1
+                if ll[:5] == day[:5].lower() or (
+                    len(ll) >= 4 and
+                    sum(a != b for a, b in zip(ll[:6], day.lower()[:6])) <= 1
                 ):
                     return day
             return None
 
-        # Split OCR lines into per-day sections
+        # --- LINKE SPALTE: Tages-Fleischgerichte ---
         sections: Dict[str, List[str]] = {}
         current_day = None
 
-        for line in lines:
-            # Stop at weekly specials section
+        for item in ocr['left']:
+            line = item['text']
             if re.search(r'wochen\s*angebot', line, re.IGNORECASE):
                 break
-
-            matched_day = fuzzy_day_match(line)
-            if matched_day:
-                current_day = matched_day
+            matched = fuzzy_day_match(line)
+            if matched:
+                current_day = matched
                 sections[current_day] = []
-                # Tesseract often merges day header + first menu item on one line
-                # e.g. "Donnerstag, 16. April 2026 mit Frühlingsrolle"
-                # → extract the trailing text after the date
                 trailing = re.sub(
                     r'^(?:' + '|'.join(day_names) + r')[^,]*,?\s*\d{1,2}\.\s*\w+\s*\d{4}\s*',
                     '', line, flags=re.IGNORECASE
@@ -855,95 +899,156 @@ class PuraVidaScraper(MenuScraper):
                 if trailing and len(trailing) > 4:
                     sections[current_day].append(trailing)
             elif current_day:
-                # Skip pure date lines like "17.April 2026"
                 if re.match(r'^\d{1,2}[\.\- ]+\w+\s+\d{4}$', line):
                     continue
-                sections[current_day].append(line)
+                if len(line) > 4 and not re.match(r'^[\W\d\s]+$', line):
+                    sections[current_day].append(line)
 
-        today_lines = sections.get(today_name, [])
-        # Remove noise lines (very short, only digits/punctuation, or phone numbers)
-        today_lines = [l for l in today_lines
-                       if len(l) > 5
-                       and not re.match(r'^[\W\d\s]+$', l)
-                       and not re.match(r'^\d{2,3}\s+\d{3}', l)]
+        today_meat_lines = [
+            l for l in sections.get(today_name, [])
+            if len(l) > 4 and not re.match(r'^[\W\d\s]+$', l)
+            and not re.match(r'^\+?[\d\s\-/]+$', l)
+        ]
 
-        menus = []
-        regular_items: List[str] = []
-        fitnesteller_items: List[str] = []
-        current_fitness: List[str] = []
+        # --- RECHTE SPALTE: Vegi + Fitnesteller + Pasta ---
+        vegi_raw: List[str] = []
+        fitness_options: List[str] = []
+        fitness_price = 'CHF 24.50'
+        wurst_item: Optional[Dict] = None
+        pasta_items: List[Dict] = []
 
-        price_re = re.compile(r'\bFr\.?\s*([\d]{2,3}\.\d{2})', re.IGNORECASE)
+        state = 'header'
 
-        for line in today_lines:
-            price_m = price_re.search(line)
-            if price_m:
-                price_val = f"CHF {price_m.group(1)}"
-                # Line contains both text and price (inline) → Fitnesteller
-                text_part = price_re.sub('', line).strip().strip(';,.')
-                if text_part:
-                    current_fitness.append(text_part)
-                if current_fitness:
-                    fitnesteller_items.append({
-                        'title': 'Fitness-Teller',
-                        'description': ' '.join(current_fitness),
-                        'price': price_val,
+        for item in ocr['right']:
+            line = item['text']
+            ll = line.lower()
+
+            if re.search(r'wochen\s*angebot', ll, re.IGNORECASE):
+                break
+
+            # Abschnittserkennung
+            if re.search(r'vegi\s+fr', ll, re.IGNORECASE):
+                state = 'vegi'
+                v = re.search(r'Vegi\s+Fr\.?\s*([\d.]+)', line, re.IGNORECASE)
+                if v:
+                    header_price['vegi'] = f'CHF {v.group(1)}'
+                continue
+
+            if re.search(r'fitnesteller', ll, re.IGNORECASE):
+                state = 'fitness'
+                pm = price_re.search(line)
+                if pm:
+                    fitness_price = f'CHF {pm.group(1)}'
+                continue
+
+            if re.search(r'^pasta\s+fr|^pasta\s+\d', ll, re.IGNORECASE):
+                state = 'pasta'
+                pm = price_re.search(line)
+                pasta_price = f'CHF {pm.group(1)}' if pm else 'CHF 19.50'
+                continue
+
+            if len(line) < 4:
+                continue
+
+            if state == 'vegi':
+                vegi_raw.append(line)
+
+            elif state == 'fitness':
+                if re.search(r'wurst|käse salat|salat garniert', ll, re.IGNORECASE):
+                    pm = price_re.search(line)
+                    wurst_item = {
+                        'title': 'Wurst-Käse Salat garniert',
+                        'description': '',
+                        'price': f'CHF {pm.group(1)}' if pm else 'CHF 19.50',
+                    }
+                elif ll.startswith('mit ') and len(line) > 6:
+                    fitness_options.append(line.strip())
+
+            elif state == 'pasta':
+                pm = price_re.search(line)
+                text = price_re.sub('', line).strip().rstrip(',.')
+                if (text and len(text) > 4
+                        and not re.search(r'www\.|http|\.ch\s*$|@|tel:|fax:|\/', text, re.IGNORECASE)):
+                    pasta_items.append({
+                        'title': 'Pasta',
+                        'description': text,
+                        'price': f'CHF {pm.group(1)}' if pm else pasta_price,
                     })
-                    current_fitness = []
-                elif regular_items:
-                    # Standalone price line closes a regular menu item section
-                    fitnesteller_items.append({
-                        'title': 'Fitness-Teller',
-                        'description': regular_items.pop(),
-                        'price': price_val,
+
+        # Vegi-Rohzeilen in 2 Gerichte splitten:
+        # Vegi 2 beginnt typischerweise mit "Pasta Funghi" oder "Funghi"
+        pasta_funghi_idx = next(
+            (i for i, l in enumerate(vegi_raw)
+             if re.search(r'funghi|tagliatelle', l, re.IGNORECASE) and i > 0),
+            len(vegi_raw)
+        )
+        vegi1_lines = [l for l in vegi_raw[:pasta_funghi_idx] if len(l) > 3]
+        vegi2_lines = [l for l in vegi_raw[pasta_funghi_idx:] if len(l) > 3]
+
+        # Heutiges Fitnesteller-Gericht: index = Wochentag (Mo=0, Di=1, ..., Fr=4)
+        weekday = today.weekday()
+        today_fitness: Optional[Dict] = None
+        if fitness_options and weekday < len(fitness_options):
+            today_fitness = {
+                'title': 'Fitnesteller (Gemischter Salat)',
+                'description': fitness_options[weekday],
+                'price': fitness_price,
+            }
+
+        # --- WOCHEN ANGEBOT aus Volltext ---
+        wochen_items: List[Dict] = []
+        in_wochen = False
+        for line in ocr['all']:
+            if re.search(r'wochen\s*angebot', line, re.IGNORECASE):
+                in_wochen = True
+                continue
+            if not in_wochen:
+                continue
+            pm = price_re.search(line)
+            if pm:
+                text = price_re.sub('', line).strip().rstrip(',.;')
+                if len(text) > 4 and not re.match(r'^[\W\d\s]+$', text):
+                    wochen_items.append({
+                        'title': 'Wochen-Angebot',
+                        'description': text,
+                        'price': f'CHF {pm.group(1)}',
                     })
-            else:
-                if current_fitness:
-                    current_fitness.append(line)
-                else:
-                    regular_items.append(line)
 
-        # Split regular_items into meat and vegi by keyword heuristics
-        if regular_items:
-            vegi_kw = ['spaghetti', 'pasta', 'tofu', 'funghi', 'tagliatelle',
-                       'tortellini', 'spinat', 'ricotta', 'gemüse', 'tomaten']
-            meat_kw = ['poulet', 'rind', 'schwein', 'cordon', 'steak', 'filet',
-                       'trutn', 'braciole', 'dorsch', 'lachs', 'salmone']
+        # --- Menüliste aufbauen ---
+        menus: List[Dict] = []
 
-            # Try to split at vegi boundary
-            split_idx = len(regular_items)
-            for i, line in enumerate(regular_items):
-                ll = line.lower()
-                if any(k in ll for k in vegi_kw) and i > 0:
-                    split_idx = i
-                    break
+        if today_meat_lines:
+            menus.append({
+                'title': 'Menü des Tages',
+                'description': ' '.join(today_meat_lines),
+                'price': header_price['menu'],
+            })
 
-            meat_lines = regular_items[:split_idx]
-            vegi_lines = regular_items[split_idx:]
+        if vegi1_lines:
+            menus.append({
+                'title': 'Vegi-Menü 1',
+                'description': ' '.join(vegi1_lines),
+                'price': header_price['vegi'],
+            })
+        if vegi2_lines:
+            menus.append({
+                'title': 'Vegi-Menü 2',
+                'description': ' '.join(vegi2_lines),
+                'price': header_price['vegi'],
+            })
 
-            # Swap if first group is mostly vegi
-            meat_score = sum(any(k in l.lower() for k in meat_kw) for l in meat_lines)
-            vegi_score = sum(any(k in l.lower() for k in vegi_kw) for l in meat_lines)
-            if vegi_score > meat_score and vegi_lines:
-                meat_lines, vegi_lines = vegi_lines, meat_lines
+        if today_fitness:
+            menus.append(today_fitness)
 
-            if meat_lines:
-                menus.append({
-                    'title': 'Menü (Fleisch/Fisch)',
-                    'description': ' – '.join(meat_lines),
-                    'price': header_price['menu'],
-                })
-            if vegi_lines:
-                menus.append({
-                    'title': 'Menü Vegi',
-                    'description': ' – '.join(vegi_lines),
-                    'price': header_price['vegi'],
-                })
+        if wurst_item:
+            menus.append(wurst_item)
 
-        menus.extend(fitnesteller_items)
+        menus.extend(pasta_items)
+        menus.extend(wochen_items)
 
         status = f'Tagesmenü {today.strftime("%d.%m.%Y")} (inkl. Suppe oder Salat)'
-        if not menus:
-            status = f'Kein Menü für {today_name} im Bild gefunden'
+        if not [m for m in menus if m['title'] == 'Menü des Tages']:
+            status = f'Kein Tagesmenü für {today_name} im Bild gefunden'
 
         return {
             'restaurant': self.name,
@@ -951,7 +1056,7 @@ class PuraVidaScraper(MenuScraper):
             'status': status,
             'price': header_price['menu'],
             'menus': menus,
-            'phone': '052 345 30 90',
+            'phone': '052 343 50 22',
             'website': self.SITE_URL,
             'note': 'Inkl. Suppe oder Menüsalat',
         }
