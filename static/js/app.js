@@ -208,11 +208,11 @@ function createRestaurantCard(menuData, draggable) {
     card.innerHTML = `
         <div class="restaurant-header">
             <div class="restaurant-title-row">
-                ${dragHandle}
                 <h2 class="restaurant-name">
                     <span class="restaurant-icon">${icon}</span>
                     ${menuData.restaurant}
                 </h2>
+                ${dragHandle}
             </div>
             <span class="status-badge ${statusClass}">${menuData.status || 'Status unbekannt'}</span>
         </div>

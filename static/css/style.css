@@ -225,7 +225,7 @@ body {
     align-items: center;
     font-size: 1.3rem;
     color: var(--border-color);
-    margin-right: 6px;
+    margin-left: 6px;
     cursor: grab;
     line-height: 1;
     user-select: none;
