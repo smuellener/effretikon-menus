@@ -762,9 +762,11 @@ class PuraVidaScraper(MenuScraper):
             return self._error_result(f'Menü-Bild nicht ladbar: {e}')
 
         # OCR mit Spalten-Trennung
+        self._ocr_error = None
         ocr = self._ocr_image(img_bytes)
         if not ocr:
-            return self._error_result('OCR fehlgeschlagen')
+            err = getattr(self, '_ocr_error', None) or 'unbekannter Fehler'
+            return self._error_result(f'OCR fehlgeschlagen: {err}')
 
         return self._parse_menu(ocr, today)
 
@@ -791,10 +793,22 @@ class PuraVidaScraper(MenuScraper):
             from PIL import Image
             import io as _io
             import os
+
+            # Set TESSDATA_PREFIX for Windows (user tessdata folder)
             if os.name == 'nt':
                 user_tessdata = os.path.expanduser('~/tessdata')
                 if os.path.isdir(user_tessdata):
                     os.environ.setdefault('TESSDATA_PREFIX', user_tessdata)
+            else:
+                # Linux: try common apt-installed paths
+                for candidate in [
+                    '/usr/share/tesseract-ocr/4.00/tessdata',
+                    '/usr/share/tesseract-ocr/5.00/tessdata',
+                    '/usr/share/tessdata',
+                ]:
+                    if os.path.isdir(candidate):
+                        os.environ.setdefault('TESSDATA_PREFIX', candidate)
+                        break
 
             img = Image.open(_io.BytesIO(img_bytes)).convert('RGB')
             w, h = img.size
@@ -819,8 +833,14 @@ class PuraVidaScraper(MenuScraper):
 
             for i in range(len(data['text'])):
                 text = data['text'][i].strip()
-                if not text or int(data['conf'][i]) < 15:
+                if not text:
                     continue
+                conf = data['conf'][i]
+                try:
+                    if int(conf) < 15:
+                        continue
+                except (ValueError, TypeError):
+                    pass
                 key = (data['block_num'][i], data['par_num'][i], data['line_num'][i])
                 x = data['left'][i]
                 y = data['top'][i]
@@ -844,7 +864,10 @@ class PuraVidaScraper(MenuScraper):
                 'all': all_lines,
             }
         except Exception as e:
-            print(f'OCR Fehler bei Thalegg: {e}')
+            import traceback
+            print(f'OCR Fehler bei Thalegg: {e}\n{traceback.format_exc()}')
+            # Store error so get_menu can surface it
+            self._ocr_error = str(e)
             return None
 
     def _parse_menu(self, ocr: Dict, today: datetime) -> Dict:
