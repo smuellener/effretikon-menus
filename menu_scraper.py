@@ -29,20 +29,10 @@ except ImportError:
     CLOUDSCRAPER_SUPPORT = False
 
 try:
-    import easyocr as _easyocr
+    import pytesseract as _pytesseract
     OCR_SUPPORT = True
 except ImportError:
     OCR_SUPPORT = False
-
-# Lazy singleton for easyocr reader (slow to initialize)
-_ocr_reader = None
-
-
-def _get_ocr_reader():
-    global _ocr_reader
-    if _ocr_reader is None and OCR_SUPPORT:
-        _ocr_reader = _easyocr.Reader(['de'], gpu=False, verbose=False)
-    return _ocr_reader
 
 
 def _to_sentence_case(text: str) -> str:
@@ -739,7 +729,7 @@ class PuraVidaScraper(MenuScraper):
         if not CLOUDSCRAPER_SUPPORT:
             return self._error_result('cloudscraper nicht installiert (pip install cloudscraper)')
         if not OCR_SUPPORT:
-            return self._error_result('easyocr nicht installiert (pip install easyocr)')
+            return self._error_result('pytesseract nicht installiert (pip install pytesseract)')
 
         # Fetch page bypassing Cloudflare
         try:
@@ -790,16 +780,15 @@ class PuraVidaScraper(MenuScraper):
     def _ocr_image(self, img_bytes: bytes) -> List[str]:
         """Führt OCR auf dem Bild durch und gibt bereinigte Textzeilen zurück."""
         try:
-            import numpy as np
             from PIL import Image
             import io as _io
-            reader = _get_ocr_reader()
-            if not reader:
-                return []
             img = Image.open(_io.BytesIO(img_bytes)).convert('RGB')
-            img_np = np.array(img)
-            results = reader.readtext(img_np, detail=0)
-            return [line.strip() for line in results if line.strip()]
+            # Resize for better OCR accuracy if small
+            w, h = img.size
+            if w < 1000:
+                img = img.resize((w * 2, h * 2), Image.LANCZOS)
+            text = _pytesseract.image_to_string(img, lang='deu', config='--psm 6')
+            return [line.strip() for line in text.split('\n') if line.strip()]
         except Exception as e:
             print(f'OCR Fehler bei Pura Vida: {e}')
             return []
