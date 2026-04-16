@@ -1,5 +1,20 @@
 // App State
 let currentMenus = [];
+
+// --- Order persistence (localStorage) ---
+const ORDER_KEY = 'effretikon_card_order';
+
+function loadOrder() {
+    try {
+        return JSON.parse(localStorage.getItem(ORDER_KEY)) || [];
+    } catch { return []; }
+}
+
+function saveOrder(names) {
+    cardOrder = names;
+    localStorage.setItem(ORDER_KEY, JSON.stringify(names));
+}
+
 let cardOrder = loadOrder(); // persisted restaurant name order
 
 // DOM Elements
@@ -58,20 +73,6 @@ async function loadMenus() {
     }
 }
 
-// --- Order persistence (localStorage) ---
-
-const ORDER_KEY = 'effretikon_card_order';
-
-function loadOrder() {
-    try {
-        return JSON.parse(localStorage.getItem(ORDER_KEY)) || [];
-    } catch { return []; }
-}
-
-function saveOrder(names) {
-    cardOrder = names;
-    localStorage.setItem(ORDER_KEY, JSON.stringify(names));
-}
 
 function applyOrder(menus) {
     if (!cardOrder.length) return menus;
