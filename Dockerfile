@@ -9,10 +9,15 @@ RUN apt-get update && apt-get install -y \
     libjpeg-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Verify tesseract is installed and capture its path for Python
+RUN which tesseract && tesseract --version
+
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
+# Explicit tesseract binary path so pytesseract never guesses
+ENV TESSERACT_CMD=/usr/bin/tesseract
 ENV PORT=10000
 CMD gunicorn app:app --workers 1 --timeout 120 --bind 0.0.0.0:$PORT

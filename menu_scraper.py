@@ -31,15 +31,22 @@ except ImportError:
 try:
     import pytesseract as _pytesseract
     import os as _os
-    # Set tesseract binary path explicitly
-    _win_tess = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-    if _os.name == 'nt' and _os.path.isfile(_win_tess):
-        _pytesseract.pytesseract.tesseract_cmd = _win_tess
-    elif _os.name != 'nt':
-        for _linux_tess in ['/usr/bin/tesseract', '/usr/local/bin/tesseract']:
-            if _os.path.isfile(_linux_tess):
-                _pytesseract.pytesseract.tesseract_cmd = _linux_tess
-                break
+    import shutil as _shutil
+
+    # Resolve tesseract binary: ENV > shutil.which > known paths
+    _tess_candidates = [
+        _os.environ.get('TESSERACT_CMD'),
+        _shutil.which('tesseract'),
+        r'C:\Program Files\Tesseract-OCR\tesseract.exe' if _os.name == 'nt' else None,
+        '/usr/bin/tesseract',
+        '/usr/local/bin/tesseract',
+    ]
+    _tess_cmd = next((p for p in _tess_candidates if p and _os.path.isfile(p)), None)
+    if _tess_cmd:
+        _pytesseract.pytesseract.tesseract_cmd = _tess_cmd
+        print(f'[OCR] tesseract_cmd = {_tess_cmd}')
+    else:
+        print('[OCR] WARNING: tesseract binary not found in any known path')
     OCR_SUPPORT = True
 except ImportError:
     OCR_SUPPORT = False
