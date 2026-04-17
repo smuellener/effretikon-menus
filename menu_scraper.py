@@ -8,7 +8,7 @@ import requests
 import re
 import io
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, date
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -113,6 +113,41 @@ class MenuScraper:
 class BellissimoScraper(MenuScraper):
     """Scraper für Ristorante Bellissimo da Edi - Tagesmenüs direkt von der Website"""
 
+    # German month names → month number
+    _MONTHS_DE = {
+        'januar': 1, 'februar': 2, 'märz': 3, 'april': 4,
+        'mai': 5, 'juni': 6, 'juli': 7, 'august': 8,
+        'september': 9, 'oktober': 10, 'november': 11, 'dezember': 12,
+    }
+
+    @classmethod
+    def _parse_date_de(cls, text: str) -> Optional[date]:
+        """Parst deutsches Datum aus Text. Erkennt z.B.:
+        'Donnerstag, 16. April 2026', '16.04.2026', '16. April 2026'
+        """
+        import re as _re
+        text = text.strip()
+
+        # DD.MM.YYYY
+        m = _re.search(r'\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b', text)
+        if m:
+            try:
+                return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+            except ValueError:
+                pass
+
+        # DD. MonatName YYYY  (optional weekday prefix)
+        m = _re.search(r'\b(\d{1,2})\.\s+([A-Za-zÄäÖöÜüß]+)\s+(\d{4})\b', text)
+        if m:
+            month_num = cls._MONTHS_DE.get(m.group(2).lower())
+            if month_num:
+                try:
+                    return date(int(m.group(3)), month_num, int(m.group(1)))
+                except ValueError:
+                    pass
+
+        return None
+
     def get_menu(self) -> Dict[str, any]:
         soup = self.fetch_page()
         if not soup:
@@ -132,6 +167,14 @@ class BellissimoScraper(MenuScraper):
         if first_texts:
             date_text = first_texts[0]
             intro_text = first_texts[1] if len(first_texts) > 1 else ''
+
+        # Validate: if the menu date is from a past day, don't show it
+        if date_text:
+            menu_date = self._parse_date_de(date_text)
+            if menu_date is not None and menu_date < datetime.now().date():
+                return self._error_result(
+                    f'Menü noch nicht aktualisiert (vom {date_text})'
+                )
 
         # Remaining elements are individual menus: [title, italian_name, german_desc, price]
         menus = []
