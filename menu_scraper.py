@@ -33,25 +33,49 @@ try:
     import os as _os
     import shutil as _shutil
     import glob as _glob
+    import subprocess as _subprocess
 
-    # Set tesseract binary path — trust TESSERACT_CMD env var unconditionally (set in Dockerfile)
-    _env_cmd = _os.environ.get('TESSERACT_CMD', '').strip()
-    if _env_cmd:
-        _pytesseract.pytesseract.tesseract_cmd = _env_cmd
-        print(f'[OCR] tesseract_cmd from ENV: {_env_cmd}', flush=True)
-    else:
-        _found = _shutil.which('tesseract')
-        if not _found:
-            for _p in [r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-                       '/usr/bin/tesseract', '/usr/local/bin/tesseract']:
-                if _os.path.isfile(_p):
-                    _found = _p
-                    break
-        if _found:
-            _pytesseract.pytesseract.tesseract_cmd = _found
-            print(f'[OCR] tesseract_cmd auto-detected: {_found}', flush=True)
-        else:
-            print('[OCR] WARNING: tesseract binary not found in any known path', flush=True)
+    def _configure_tesseract_runtime() -> Optional[str]:
+        """Find a working tesseract binary and apply it for pytesseract."""
+        candidates: List[str] = []
+
+        env_cmd = _os.environ.get('TESSERACT_CMD', '').strip()
+        if env_cmd:
+            candidates.append(env_cmd)
+
+        found_cmd = _shutil.which('tesseract')
+        if found_cmd:
+            candidates.append(found_cmd)
+
+        for p in [
+            '/usr/bin/tesseract',
+            '/usr/local/bin/tesseract',
+            r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+        ]:
+            if p not in candidates:
+                candidates.append(p)
+
+        for cmd in candidates:
+            try:
+                _subprocess.run(
+                    [cmd, '--version'],
+                    check=True,
+                    stdout=_subprocess.DEVNULL,
+                    stderr=_subprocess.DEVNULL,
+                    timeout=5,
+                )
+            except Exception:
+                continue
+
+            _pytesseract.pytesseract.tesseract_cmd = cmd
+            cmd_dir = _os.path.dirname(cmd)
+            if cmd_dir and cmd_dir not in _os.environ.get('PATH', ''):
+                _os.environ['PATH'] = cmd_dir + _os.pathsep + _os.environ.get('PATH', '')
+            print(f'[OCR] tesseract_cmd active: {cmd}', flush=True)
+            return cmd
+
+        print('[OCR] WARNING: no working tesseract binary found', flush=True)
+        return None
 
     # Set TESSDATA_PREFIX — use glob to find language data regardless of installed version
     if not _os.environ.get('TESSDATA_PREFIX'):
@@ -69,6 +93,7 @@ try:
             _os.environ['TESSDATA_PREFIX'] = _td_found
             print(f'[OCR] TESSDATA_PREFIX = {_td_found}', flush=True)
 
+    _configure_tesseract_runtime()
     OCR_SUPPORT = True
 except ImportError:
     OCR_SUPPORT = False
@@ -1112,6 +1137,13 @@ class PuraVidaScraper(MenuScraper):
         Jedes Element hat {'text': str, 'y': int}.
         """
         try:
+            active_cmd = _configure_tesseract_runtime()
+            if not active_cmd:
+                self._ocr_error = (
+                    'tesseract binary nicht gefunden (weder TESSERACT_CMD noch PATH)'
+                )
+                return None
+
             from PIL import Image
             import io as _io
 
