@@ -32,21 +32,43 @@ try:
     import pytesseract as _pytesseract
     import os as _os
     import shutil as _shutil
+    import glob as _glob
 
-    # Resolve tesseract binary: ENV > shutil.which > known paths
-    _tess_candidates = [
-        _os.environ.get('TESSERACT_CMD'),
-        _shutil.which('tesseract'),
-        r'C:\Program Files\Tesseract-OCR\tesseract.exe' if _os.name == 'nt' else None,
-        '/usr/bin/tesseract',
-        '/usr/local/bin/tesseract',
-    ]
-    _tess_cmd = next((p for p in _tess_candidates if p and _os.path.isfile(p)), None)
-    if _tess_cmd:
-        _pytesseract.pytesseract.tesseract_cmd = _tess_cmd
-        print(f'[OCR] tesseract_cmd = {_tess_cmd}')
+    # Set tesseract binary path — trust TESSERACT_CMD env var unconditionally (set in Dockerfile)
+    _env_cmd = _os.environ.get('TESSERACT_CMD', '').strip()
+    if _env_cmd:
+        _pytesseract.pytesseract.tesseract_cmd = _env_cmd
+        print(f'[OCR] tesseract_cmd from ENV: {_env_cmd}', flush=True)
     else:
-        print('[OCR] WARNING: tesseract binary not found in any known path')
+        _found = _shutil.which('tesseract')
+        if not _found:
+            for _p in [r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+                       '/usr/bin/tesseract', '/usr/local/bin/tesseract']:
+                if _os.path.isfile(_p):
+                    _found = _p
+                    break
+        if _found:
+            _pytesseract.pytesseract.tesseract_cmd = _found
+            print(f'[OCR] tesseract_cmd auto-detected: {_found}', flush=True)
+        else:
+            print('[OCR] WARNING: tesseract binary not found in any known path', flush=True)
+
+    # Set TESSDATA_PREFIX — use glob to find language data regardless of installed version
+    if not _os.environ.get('TESSDATA_PREFIX'):
+        _td_found = None
+        for _pat in ['/usr/share/tesseract-ocr/*/tessdata', '/usr/share/tessdata']:
+            _matches = _glob.glob(_pat)
+            if _matches and _os.path.isdir(_matches[0]):
+                _td_found = _matches[0]
+                break
+        if not _td_found and _os.name == 'nt':
+            _win_td = _os.path.expanduser('~/tessdata')
+            if _os.path.isdir(_win_td):
+                _td_found = _win_td
+        if _td_found:
+            _os.environ['TESSDATA_PREFIX'] = _td_found
+            print(f'[OCR] TESSDATA_PREFIX = {_td_found}', flush=True)
+
     OCR_SUPPORT = True
 except ImportError:
     OCR_SUPPORT = False
@@ -203,6 +225,250 @@ class BellissimoScraper(MenuScraper):
             'website': self.url,
             'note': intro_text,
         }
+
+
+class OaseScraper(MenuScraper):
+    """Scraper für Restaurant Oase Effretikon – Wochenmenü als PDF (Hauptgang)"""
+
+    GASTRONOMIE_URL = 'https://oaseeffretikon.ch/dienstleistungen/gastronomie/'
+
+    # Structural labels to skip
+    _STRUCT = {'MENÜ', 'MITTAG`S', 'MITTAGS', 'VORSPEISEN', 'HAUPTGANG', 'DESSERT',
+               'SPEZIALITÄTEN', 'SPEZIALITATEN'}
+    # Noise / non-dish lines to skip
+    _SKIP = {'TAGESSUPPE', 'SIE HABEN DIE WAHL', 'DAZU SERVIEREN', 'PACK CHOI',
+             'FALLS NICHT', 'ALLERGIEN', 'ALLE PREISE', '3 GANG', 'GENUSSTAG',
+             'PLAUSCH', 'GEMISCHTER', 'SPARGELSALAT', 'FREITAG BIS',
+             'MONTAG', 'DIENSTAG', 'MITTWOCH', 'DONNERSTAG', 'FREITAG',
+             'SAMSTAG', 'SONNTAG', 'FLEISCH UND', 'AUSKUNFT', 'VERWENDEN WIR',
+             # PDF column split artifacts (day-name fragments)
+             'ONTAG', 'ITTAG', 'ITTW', 'B I SM', 'ERSTA', 'OCH'}
+    # Words indicating dessert — stop collecting at these
+    _DESSERT = {'GLACE', 'CHEESECAKE', 'SCHOKOLADE', 'MERINGUE', 'HIMBEER',
+                'SCHLORZIFLADEN', 'TARTELETTE', 'TIRAMISU', 'ROULADE', 'MOUSSE',
+                'VANILLE', 'BEERENSAUCE'}
+    # Garnish / side-dish words — filter out as standalone items (<=5 words)
+    _SIDES = {'FOLIENKARTOFFEL', 'SCHUPFNUDELN', 'BRAMATA', 'PETERSILIEN',
+              'PACK CHOI', 'SAUERRAHM', 'PROVENÇALE', 'SPÄTZLI', 'GREMOLATA',
+              'SPINAT', 'ERBSEN', 'MAIS', 'GRÜNE BOHNEN', 'TOMATEN',
+              'PASTASPARGELSPITZEN', 'PETERSILIEN KARTOFFEL'}
+    # Exact post-grouping items to skip (side-dish combos)
+    _EXACT_SKIP = {'PASTA', 'SPINAT', 'ERBSEN', 'MAIS UND PEPERONI',
+                   'FOLIENKARTOFFEL MIT SAUERRAHM', 'TOMATEN À LA PROVENÇALE',
+                   'PETERSILIEN KARTOFFEL', 'GRÜNE BOHNEN', 'PASTASPARGELSPITZEN',
+                   'SCHUPFNUDELN', 'PROVENÇALE'}
+    # Words that indicate this item continues the previous one
+    _CONT = {'MIT', 'UND', 'AN', 'VOM', 'AUF', 'IN', 'ZU', 'VON', 'AUS',
+             'IM', 'AM', 'BEI', 'SAMT', 'GREMOLATA', 'BRAMATA', 'LA', 'À'}
+    # Words suggesting vegetarian
+    _VEGI = {'SOJA', 'TOFU', 'QUARK', 'MALFATTI', 'QUORN', 'GEMÜSETÄTSCHLI',
+             'PARMIGIANA', 'CHILI SIN', 'SPINAT-RICOTTA', 'RICOTTA',
+             'BOHNEN', 'PASTA FUNGHI', 'PASTA SPINAT', 'GEMÜSE'}
+
+    def get_menu(self) -> Dict[str, any]:
+        today = datetime.now()
+
+        soup = self.fetch_page(self.GASTRONOMIE_URL)
+        if not soup:
+            return self._error_result('Website nicht erreichbar')
+
+        kw_today = today.isocalendar()[1]
+        pdf_url, pdf_label = None, ''
+        for a in soup.find_all('a', href=re.compile(r'Mittagskarte-KW\d+', re.I)):
+            href = a.get('href', '')
+            m = re.search(r'KW(\d+)', href, re.I)
+            if m and int(m.group(1)) == kw_today:
+                pdf_url = href
+                pdf_label = a.get_text(strip=True)
+                break
+
+        if not pdf_url:
+            return self._error_result(f'Mittagskarte KW{kw_today} noch nicht online')
+        if not PDF_SUPPORT:
+            return self._error_result('pypdf nicht installiert (pip install pypdf)')
+
+        pdf_bytes = self.fetch_pdf_bytes(pdf_url)
+        if not pdf_bytes:
+            return self._error_result('PDF nicht ladbar')
+
+        menus = self._parse_pdf(pdf_bytes, today.date())
+        return {
+            'restaurant': self.name,
+            'address': self.address,
+            'status': f'Woche {pdf_label}',
+            'price': 'CHF 20.50 / 24.-',
+            'menus': menus,
+            'phone': '052 354 54 54',
+            'website': self.url,
+            'note': '3-Gang-Menü inkl. Suppe/Salat und Dessert',
+        }
+
+    @staticmethod
+    def _despace(text: str) -> str:
+        """Collapse spaced-out PDF chars: 'H Ü H N E R  M I T' → 'HÜHNER MIT'"""
+        lines = []
+        for line in text.split('\n'):
+            segs = re.split(r' {2,}', line)
+            norm = []
+            for seg in segs:
+                tokens = seg.split(' ')
+                total = sum(1 for t in tokens if t)
+                single = sum(1 for t in tokens if t and len(t) == 1)
+                if total >= 2 and single / total >= 0.7:
+                    norm.append(''.join(t for t in tokens if t))
+                else:
+                    norm.append(seg.strip())
+            lines.append(' '.join(s for s in norm if s))
+        return '\n'.join(lines)
+
+    def _page_covers_date(self, text: str, target: date) -> bool:
+        dates = []
+        for m in re.finditer(r'(\d{1,2})\.(\d{2})\.?(\d{4})?', text):
+            d, mo = int(m.group(1)), int(m.group(2))
+            yr = int(m.group(3)) if m.group(3) else target.year
+            try:
+                dates.append(date(yr, mo, d))
+            except ValueError:
+                pass
+        return bool(dates) and min(dates) <= target <= max(dates)
+
+    def _parse_pdf(self, pdf_bytes: bytes, today: date) -> List[Dict]:
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+
+        today_text = None
+        for page in reader.pages:
+            raw = page.extract_text() or ''
+            norm = self._despace(raw)
+            if self._page_covers_date(norm, today):
+                today_text = norm
+                break
+
+        if today_text is None:
+            return [{'title': 'Kein Menü für heute im PDF', 'description': '', 'price': ''}]
+
+        return self._extract_hauptgang(today_text)
+
+    def _extract_hauptgang(self, text: str) -> List[Dict]:
+        """Extract Hauptgang dishes from a normalized page.
+
+        The PDF has two content zones:
+        - Zone 1: between 'GEMISCHTER' and 'Spezialitäten' → standard CHF 20.50 dishes
+        - Zone 2: after 'SIE HABEN DIE WAHL' → day-special and additional options
+        """
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+
+        def _is_skip(line: str) -> bool:
+            up = line.upper()
+            if re.match(r'^CHF\s*[\d.,\-/]+', up):
+                return True
+            if any(up.startswith(s) or up == s for s in self._STRUCT | self._SKIP):
+                return True
+            # garbage fragments from broken PDF columns (e.g. 'ONTAG', 'ITTW')
+            if len(line) <= 4 and not re.search(r'[aeiouäöüAEIOUÄÖÜ]', line):
+                return True
+            return False
+
+        def _is_dessert(line: str) -> bool:
+            up = line.upper()
+            return any(w in up for w in self._DESSERT)
+
+        def _collect_zone(start_trigger, stop_trigger) -> List[str]:
+            collecting = False
+            in_dessert = False
+            result = []
+            for line in lines:
+                up = line.upper()
+                if start_trigger(up):
+                    collecting = True
+                    in_dessert = False
+                    continue
+                if stop_trigger(up):
+                    collecting = False
+                    continue
+                if not collecting:
+                    continue
+                if _is_dessert(line):
+                    in_dessert = True
+                    continue
+                if in_dessert:
+                    # A price line after the dessert section signals return to main dishes
+                    if re.match(r'^CHF\s*[\d.,\-/]+', up):
+                        in_dessert = False
+                    continue
+                if _is_skip(line):
+                    continue
+                if len(line.strip()) >= 3:
+                    result.append(line.strip())
+            return result
+
+        # Zone 1: standard Hauptgang (between GEMISCHTER marker and Spezialitäten)
+        zone1 = _collect_zone(
+            start_trigger=lambda u: 'GEMISCHTER' in u or 'SPARGELSALAT' in u,
+            stop_trigger=lambda u: 'SPEZIALIT' in u,
+        )
+
+        # Zone 2: day-special and additional options (after SIE HABEN DIE WAHL)
+        zone2 = _collect_zone(
+            start_trigger=lambda u: 'SIE HABEN' in u or '3 GANG' in u,
+            stop_trigger=lambda u: False,  # collect to end of page
+        )
+
+        dish_lines = zone1 + zone2
+
+        if not dish_lines:
+            return [{'title': 'Menü auf Website verfügbar', 'description': '', 'price': ''}]
+
+        # Group consecutive lines into dishes
+        items: List[str] = []
+        current: List[str] = []
+
+        for line in dish_lines:
+            first_word = line.split()[0].upper().rstrip(',') if line.split() else ''
+            prev_last = current[-1].split()[-1].upper().rstrip(',') if current else ''
+            prev_line = current[-1] if current else ''
+
+            is_cont = (
+                first_word in self._CONT
+                or line.startswith('(')
+                or prev_last in self._CONT
+                or prev_last.endswith('-')
+                or prev_line.endswith(',')
+                # Ingredient list follows dish name: "PARMIGIANA DI MELANZANE" → "AUBERGINE, BASILIKUM,"
+                or (',' in line and ',' not in ' '.join(current))
+            )
+
+            if current and not is_cont:
+                items.append(' '.join(current))
+                current = [line]
+            else:
+                current.append(line)
+
+        if current:
+            items.append(' '.join(current))
+
+        # Build result — filter sides, detect vegi
+        result = []
+        for item_text in items:
+            if len(item_text) < 5:
+                continue
+            up = item_text.upper().strip()
+            # Exact skip: known side-dish combos
+            if up in self._EXACT_SKIP:
+                continue
+            # Partial skip: garnish words in short items
+            if any(s in up for s in self._SIDES) and len(item_text.split()) <= 5:
+                continue
+            # Normalize line-break hyphens: "Quark- Nocken" → "Quark-Nocken"
+            item_text = re.sub(r'-\s+', '-', item_text)
+            is_vegi = any(w in up for w in self._VEGI)
+            result.append({
+                'title': ('🌱 ' if is_vegi else '') + item_text.title(),
+                'description': '',
+                'price': '',
+            })
+
+        return result[:8]
 
 
 class QNWorldScraper(MenuScraper):
@@ -826,17 +1092,18 @@ class PuraVidaScraper(MenuScraper):
         return self._parse_menu(ocr, today)
 
     def _find_menu_image(self, soup: BeautifulSoup) -> Optional[str]:
-        """Sucht das Wochenplan-Bild anhand des srcset (transf/none) auf der Seite."""
+        """Sucht das Wochenplan-Bild anhand des srcset/src/data-src (transf/none) auf der Seite."""
         for img in soup.find_all('img'):
-            srcset = img.get('srcset', '')
-            src = img.get('src', '')
-            for part in (srcset + ',' + src).split(','):
-                part = part.strip()
-                if 'transf/none' in part and 'jimcdn' in part:
-                    url = part.split(' ')[0]
-                    # Normalise: ensure ?-version param or path version present
-                    if '/image/' in url and '/version/' in url:
-                        return url
+            # Check srcset, src, and data-src attributes
+            candidates = []
+            for attr in ('srcset', 'src', 'data-src'):
+                val = img.get(attr, '')
+                if val:
+                    candidates.append(val)
+            for part in ','.join(candidates).split(','):
+                part = part.strip().split(' ')[0]  # strip " 595w" suffix
+                if 'transf/none' in part and 'jimcdn' in part and '/version/' in part:
+                    return part
         return None
 
     def _ocr_image(self, img_bytes: bytes) -> Optional[Dict]:
@@ -847,23 +1114,6 @@ class PuraVidaScraper(MenuScraper):
         try:
             from PIL import Image
             import io as _io
-            import os
-
-            # Set TESSDATA_PREFIX for Windows (user tessdata folder)
-            if os.name == 'nt':
-                user_tessdata = os.path.expanduser('~/tessdata')
-                if os.path.isdir(user_tessdata):
-                    os.environ.setdefault('TESSDATA_PREFIX', user_tessdata)
-            else:
-                # Linux: try common apt-installed paths
-                for candidate in [
-                    '/usr/share/tesseract-ocr/4.00/tessdata',
-                    '/usr/share/tesseract-ocr/5.00/tessdata',
-                    '/usr/share/tessdata',
-                ]:
-                    if os.path.isdir(candidate):
-                        os.environ.setdefault('TESSDATA_PREFIX', candidate)
-                        break
 
             img = Image.open(_io.BytesIO(img_bytes)).convert('RGB')
             w, h = img.size
@@ -1285,6 +1535,11 @@ class MenuAggregator:
                 url="https://bellissimo-effretikon.ch/tagesmenue/",
                 address="Bahnhofstrasse 21, 8307 Illnau-Effretikon"
             ),
+            OaseScraper(
+                name="Restaurant Oase",
+                url="https://oaseeffretikon.ch/dienstleistungen/gastronomie/",
+                address="Zürichstrasse 25, 8307 Effretikon"
+            ),
             QNWorldScraper(
                 name="QN World Restaurant",
                 url="https://www.qn-world.ch/karten/mittagsmenu/",
@@ -1306,7 +1561,7 @@ class MenuAggregator:
                 address="Gewerbestrasse 6, 8307 Effretikon"
             ),
             PuraVidaScraper(
-                name="Restaurant Thalegg",
+                name="Restaurant Riet",
                 url="https://www.restaurant-riet.ch/",
                 address="Rietstrasse, 8307 Effretikon"
             ),
